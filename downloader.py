@@ -2,11 +2,10 @@ import subprocess
 import requests
 from bs4 import BeautifulSoup
 import re
-import os
+from concurrent.futures import ThreadPoolExecutor
 
-m3u8DL_RE = 'N_m3u8DL-RE'
-
-def extract_mpd_url(url):
+# Define the function to extract MPD URLs from a given URL
+def extract_mpd_urls(url):
     try:
         # Send an HTTP GET request to the URL
         response = requests.get(url)
@@ -16,43 +15,36 @@ def extract_mpd_url(url):
             # Parse the HTML content
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Find the <h1> tag with the show title
-            title_tag = soup.find('h1', {'data-testid': 'titleScreen_descriptionCard_title'})
-
-            if title_tag:
-                # Extract show name, season number, and episode number from the tag's content
-                title_text = title_tag.text
-                match = re.match(r'^(.*?)\s*\|\s*Season\s*(\d+)\s*\|\s*Episode\s*(\d+)', title_text)
-                
-                if match:
-                    show_name, season_number, episode_number = match.groups()
-                    
-                    # Generate the filename
-                    filename = f"{show_name.strip('.')}.S{season_number}.E{episode_number}"
-
-                    print(f"Extracted {filename} from {url}")
-                    
-                    # Find the MPD URL in the HTML content using a regular expression
-                    mpd_url_match = re.search(r'"(https://[^"]+\.mpd)"', str(soup))
-                    
-                    if mpd_url_match:
-                        mpd_url = mpd_url_match.group(1)
-                        print(f"Downloading {filename} from {mpd_url}")
-
-                        # Run m3u8DL-RE to download the episode
-                        subprocess.run([m3u8DL_RE,
-                                        '-M', f'format=mkv:muxer=ffmpeg:quality={quality}',
-                                        '--concurrent-download',
-                                        '--log-level', 'INFO',
-                                        '--save-name', filename, mpd_url])
-                    else:
-                        print("MPD URL not found on the page.")
-                else:
-                    print(f"Invalid format in the <h1> tag content: {title_text}")
-            else:
-                print("No <h1> tag with the show title found.")
+            # Find all MPD URLs in the HTML content
+            mpd_urls = re.findall(r'"(https://[^"]+\.mpd)"', str(soup))
+            return mpd_urls
         else:
             print(f"Failed to retrieve content from {url}. Status code: {response.status_code}")
+            return []
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        return []
+
+# Define the function to download an MPD URL using yt-dlp
+def download_mpd_url(mpd_url):
+    try:
+        # Construct the yt-dlp command
+        cmd = [
+            'yt-dlp',
+            '--no-part',
+            '--restrict-filenames',
+            '-N', '4',
+            '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/116.0',
+            '--cookies-from-browser', 'firefox',
+            '--referer', 'https://www.amazon.in/',
+            mpd_url
+        ]
+
+        # Run the yt-dlp command to download the MPD URL
+        subprocess.run(cmd, check=True)
+        print(f"Downloaded: {mpd_url}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error downloading {mpd_url}: {e}")
     except Exception as e:
         print(f"An error occurred: {str(e)}")
 
@@ -60,11 +52,11 @@ def extract_mpd_url(url):
 with open('episode_urls.txt', 'r') as file:
     episode_urls = file.read().splitlines()
 
-# Specify the desired video quality (e.g., hd, sd)
-quality = 'hd'
-
-# Download the episodes using m3u8DL-RE
-for episode_url in episode_urls:
-    extract_mpd_url(episode_url)
+# Extract and download MPD URLs in parallel
+with ThreadPoolExecutor(max_workers=4) as executor:
+    for episode_url in episode_urls:
+        mpd_urls = extract_mpd_urls(episode_url)
+        if mpd_urls:
+            executor.map(download_mpd_url, mpd_urls)
 
 print("All episodes downloaded.")
